@@ -10,7 +10,7 @@ namespace MultiMulti.Core
 {
     public class Bootstrapper : BootstrapperBase
     {
-        private SimpleContainer _container = new SimpleContainer();
+        private readonly SimpleContainer _container = new SimpleContainer();
 
         public Bootstrapper()
         {
@@ -29,7 +29,8 @@ namespace MultiMulti.Core
             _container.PerRequest<ShellViewModel, ShellViewModel>();
             _container.PerRequest<PermutationProvider, PermutationProvider>();
             _container.PerRequest<DataService, DataService>();
-            _container.PerRequest<PairAnalyzer, PairAnalyzer>();
+            _container.PerRequest<ExcelExporter, ExcelExporter>();
+            _container.PerRequest<DrawScraper, DrawScraper>();
             base.Configure();
         }
 

@@ -1,11 +1,11 @@
 ﻿using Caliburn.Micro;
 using Microsoft.Win32;
+using MultiMulti.Core.DTOs;
+using MultiMulti.Core.Exceptions;
 using MultiMulti.Core.Services;
 using MultiMulti.Core.Utils;
 using NLog;
-using OfficeOpenXml;
 using System;
-using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
@@ -14,148 +14,142 @@ using LogManager = NLog.LogManager;
 
 namespace MultiMulti.Core.ViewModels
 {
-    public class ShellViewModel : Screen
+    public class ShellViewModel : Conductor<object>
     {
         private const int RequiredSelectedButtonsCount = 20;
 
         public ObservableCollection<ButtonViewModel> Buttons { get; set; } = new ObservableCollection<ButtonViewModel>();
-        public ObservableCollection<DrawHistoryItemViewModel> DrawHistoryItems { get; set; } = new ObservableCollection<DrawHistoryItemViewModel>();
-        public ObservableCollection<MostCommonPairModel> MostCommonPairs { get; set; } = new ObservableCollection<MostCommonPairModel>();
+        public ObservableCollection<PairDto> MostCommonPairs { get; set; } = new ObservableCollection<PairDto>();
 
-        private readonly PermutationProvider _permutationProvider;
+        private bool _exportToExcelButtonEnabled = true;
+
+        public bool ExportToExcelButtonEnabled
+        {
+            get => _exportToExcelButtonEnabled;
+            set
+            {
+                _exportToExcelButtonEnabled = value;
+                NotifyOfPropertyChange(() => ExportToExcelButtonEnabled);
+            }
+        }
+
         private readonly DataService _dataService;
-        private readonly PairAnalyzer _pairAnalyzer;
         private readonly ILogger _logger = LogManager.GetCurrentClassLogger();
         private readonly IWindowManager _windowManager;
+        private readonly ExcelExporter _excelExporter;
+        private readonly PermutationProvider _permutationProvider;
+        private readonly DrawScraper _drawScraper;
 
-        public ShellViewModel(IWindowManager windowManager, PermutationProvider permutationProvider, DataService dataService, PairAnalyzer pairAnalyzer)
+        public ShellViewModel(IWindowManager windowManager, DataService dataService, ExcelExporter excelExporter,
+            PermutationProvider permutationProvider, DrawScraper drawScraper)
         {
             _windowManager = windowManager;
-            _permutationProvider = permutationProvider;
             _dataService = dataService;
-            _pairAnalyzer = pairAnalyzer;
+            _excelExporter = excelExporter;
+            _permutationProvider = permutationProvider;
+            _drawScraper = drawScraper;
 
             for (var index = 1; index <= 80; index++)
             {
                 Buttons.Add(new ButtonViewModel(index.ToString(), this));
             }
-
-            GenerateDrawHistoryItems();
-
-            UpdateMostCommonPairs();
-        }
-
-        private void GenerateDrawHistoryItems()
-        {
-            DrawHistoryItems.Clear();
-
-            try
-            {
-                var data = _dataService.GetDataFromAllFiles();
-                foreach (var draw in data)
-                {
-                    DrawHistoryItems.Add(new DrawHistoryItemViewModel(this, draw));
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "Error occured while trying to generate history items");
-                MessageBox.Show(ex.Message, "Blad");
-            }
         }
 
         public bool CanSelectButton() => Buttons.Count(btn => btn.IsSelected) < RequiredSelectedButtonsCount;
 
-        public IEnumerable<IEnumerable<int>> FindPairs()
+        protected override async void OnActivate()
         {
             try
             {
-                var selectedNumbers = Buttons.Where(btn => btn.IsSelected).Select(btn => int.Parse(btn.ButtonText));
-                return _permutationProvider.GetPermutations(selectedNumbers, 2);
+                var progressVm = new ProgressViewModel
+                {
+                    Message = "Tworzenie bazy danych...",
+                    CurrentProgress = 20
+                };
+                _windowManager.ShowWindow(progressVm);
+
+                _dataService.ImportAll();
+
+                progressVm.Message = "Wyszukiwanie najnowszych losowań w internecie...";
+                progressVm.CurrentProgress = 50;
+
+                try
+                {
+                    var latest = _dataService.GetLatestDraw();
+                    await _drawScraper.ScrapeNewestAsync(latest.Added);
+                }
+                catch (DrawParsingException)
+                {
+
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex);
+                }
+
+                progressVm.Message = "Liczenie najczęściej występujących par...";
+                progressVm.CurrentProgress = 80;
+
+                UpdateMostCommmonPairs();
+                progressVm.TryClose();
             }
-            catch (Exception ex)
+            catch (Exception e)
             {
-                _logger.Error(ex);
-                MessageBox.Show(ex.Message, "Blad");
-                return Enumerable.Empty<IEnumerable<int>>();
+                MessageBox.Show("Wystąpił bład przy ładowaniu programu.");
+                _logger.Error(e);
+            }
+
+            base.OnActivate();
+        }
+
+        private void UpdateMostCommmonPairs()
+        {
+            foreach (var pair in _dataService.GetMostCommonPairs())
+            {
+                var pairDto = new PairDto
+                {
+                    Pair = pair.Value,
+                    Occurences = pair.Occurences,
+                    OccurencePercentage = $"{pair.OccurencePercentage:F8}%"
+                };
+                MostCommonPairs.Add(pairDto);
             }
         }
 
-        public void ExportToExcel()
+        public async void ExportToExcel()
         {
+            var filePath = RequestSaveFilePath();
+
+            if (string.IsNullOrWhiteSpace(filePath))
+                return;
+
+            var progressBarVm = new ProgressViewModel
+            {
+                Message = "Trwa eksportowanie wszystkich danych do pliku excel. To może potrwać do kilku minut."
+            };
+
+
+            ExportToExcelButtonEnabled = false;
+
             try
             {
-                var allData = _dataService.GetDataFromAllFiles().ToList();
+                _windowManager.ShowWindow(progressBarVm);
 
-                // Nothing to export...
-                if (allData.Count == 0)
+                var progress = new Progress<Tuple<int, int>>((value) =>
                 {
-                    MessageBox.Show($"Nie znaleziono żadnych losowań. Proszę najpierw wybrać {RequiredSelectedButtonsCount} liczb i kliknąć 'Dodaj losowanie.'", "Brak losowań");
-                    return;
-                }
+                    progressBarVm.CurrentProgress = (value.Item1 / (double)value.Item2) * 100;
+                });
 
-                var excelFileDestinationPath = RequestSaveFilePath();
-                if (string.IsNullOrWhiteSpace(excelFileDestinationPath))
-                    return;
-
-                using (var excel = new ExcelPackage())
-                {
-                    var worksheet = excel.Workbook.Worksheets.Add("Pary");
-
-                    var headers = new List<string> { "Wszystkie pary", "Wystąpienia" };
-                    headers.AddRange(allData.Select((d, index) => $"Los. {index + 1} ({d.Added.ToShortDateString()})"));
-                    var headerRow = new List<string[]> { headers.ToArray() };
-                    worksheet.Cells[1, 1].LoadFromArrays(headerRow);
-
-                    //AllPairs + analysis
-                    var allPairs = _dataService.GetAllPairs().ToArray();
-                    for (var index = 0; index < allPairs.Length; index++)
-                    {
-                        var pair = allPairs[index].ToArray();
-                        var pairArray = pair.ToArray();
-                        var pairText = $"{pairArray[0]}, {pairArray[1]}";
-                        worksheet.Cells[index + 2, 1].LoadFromArrays(new List<string[]> { new[] { pairText } });
-
-                        var analysis = _pairAnalyzer.Analyze(pair, allData.ToArray());
-                        var analysisText = $"{analysis.OccurenceCount} ({analysis.OccurencePercentage:F2}%)";
-                        worksheet.Cells[index + 2, 2].LoadFromArrays(new List<string[]> { new[] { analysisText } });
-                    }
-
-                    // Draws
-                    for (var dataIndex = 0; dataIndex < allData.Count; dataIndex++)
-                    {
-                        var columnIndex = headers.Count - allData.Count + dataIndex + 1;
-                        var currentData = allData[dataIndex];
-                        for (var index = 0; index < currentData.Values.Count(); index++)
-                        {
-                            var rowIndex = index + 2;
-                            var currentPairs = currentData.Values.ToList()[index].ToArray();
-                            var rowText = $"{string.Join(", ", currentPairs)}";
-                            var row = new List<string[]> { new[] { rowText } };
-                            worksheet.Cells[rowIndex, columnIndex].LoadFromArrays(row);
-                        }
-                    }
-
-                    var excelFile = new FileInfo(Path.Combine(Path.GetDirectoryName(excelFileDestinationPath),
-                                                 Path.GetFileName(excelFileDestinationPath)));
-                    try
-                    {
-                        excel.SaveAs(excelFile);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex);
-                        MessageBox.Show(
-                            "Wystąpił błąd przy zapisywaniu pliku excel. Upewnij się, że wybrany plik nie jest używany przez inny program.",
-                            "Blad Excel");
-                    }
-                }
+                await _excelExporter.ExportAll(filePath, progress);
             }
             catch (Exception ex)
             {
-               _logger.Error(ex);
-                MessageBox.Show(ex.Message, "Blad");
+                MessageBox.Show($"Wystąpił błąd przy eksporcie. Proszę się upewnić, że plik {Path.GetFileName(filePath)} nie jest otwarty w innym programie! {Environment.NewLine} {ex.Message}");
+                _logger.Error(ex);
             }
+
+            progressBarVm.TryClose();
+            ExportToExcelButtonEnabled = true;
         }
 
         public string RequestSaveFilePath()
@@ -180,99 +174,43 @@ namespace MultiMulti.Core.ViewModels
             return string.Empty;
         }
 
-        public void AddNewDraw()
-        {
-            var selectedButtonsCount = Buttons.Count(btn => btn.IsSelected);
-            if (selectedButtonsCount != RequiredSelectedButtonsCount)
-            {
-                MessageBox.Show($"Proszę wybrać {RequiredSelectedButtonsCount} liczb.", "Niewystarczająca liczba wartości");
-                return;
-            }
-
-            try
-            {
-                var pairs = FindPairs().ToList();
-
-                _dataService.AddData(new Data
-                {
-                    Id = Guid.NewGuid(),
-                    Added = DateTime.Now,
-                    Values = pairs,
-                    SelectedNumbers = Buttons.Where(btn => btn.IsSelected).Select(btn => int.Parse(btn.ButtonText))
-                });
-
-                GenerateDrawHistoryItems();
-                UpdateMostCommonPairs();
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex);
-                MessageBox.Show(ex.Message, "Blad");
-            }
-
-            //Reset buttons.
-            foreach (var button in Buttons)
-            {
-                button.IsSelected = false;
-            }
-        }
-
-        public void RemoveDrawHistoryItem(Guid id)
-        {
-            var index = DrawHistoryItems.ToList().FindIndex(item => item.Id.Equals(id));
-            if (index == -1)
-            {
-                _logger.Warn($"RemoveDrawHistoryItem was not able to find DrawHistoryItem with id={id}");
-                return;
-            }
-            DrawHistoryItems.RemoveAt(index);
-
-            try
-            {
-                _dataService.DeleteDrawFileWithId(id);
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex);
-                MessageBox.Show(ex.Message, "Blad");
-            }
-
-            UpdateMostCommonPairs();
-        }
-
-        private void UpdateMostCommonPairs()
-        {
-            try
-            {
-                MostCommonPairs.Clear();
-
-                var allData = _dataService.GetDataFromAllFiles().ToList();
-                var allPairs = _dataService.GetAllPairs().ToArray();
-
-                var result = allPairs.Select(pair => _pairAnalyzer.Analyze(pair.ToArray(), allData.ToArray()))
-                    .Where(pair => pair.OccurenceCount > 0)
-                    .OrderByDescending(pair => pair.OccurenceCount)
-                    .Take(10);
-                foreach (var pair in result)
-                {
-                    MostCommonPairs.Add(new MostCommonPairModel
-                    {
-                        PairValue = $"[{pair.ValueText}]",
-                        PercentageText = $" ({pair.OccurencePercentage:F2}%)",
-                        OccurenceText = $" Wystąpiła {pair.OccurenceCount} razy"
-                    });
-                }
-            }
-            catch (Exception x)
-            {
-                _logger.Error(x);
-                MessageBox.Show(x.Message, "Blad");
-            }
-        }
-
         public void OnHelpClicked()
         {
             _windowManager.ShowDialog(new HelpViewModel());
+        }
+
+        public void AddNewDraw()
+        {
+            var canAdd = Buttons.Count(b => b.IsSelected) == RequiredSelectedButtonsCount;
+
+            if (!canAdd)
+            {
+                MessageBox.Show($"Proszę wybrać {RequiredSelectedButtonsCount} liczb");
+                return;
+            }
+
+            var values = Buttons.Where(btn => btn.IsSelected).Select(btn => int.Parse(btn.ButtonText)).ToArray();
+            var pairs = _permutationProvider.GetPermutations(values, 2)
+                .Select(p => p.ToArray()[0] + ", " + p.ToArray()[1]).ToArray();
+
+            var data = new Data
+            {
+                Added = DateTime.Now,
+                Values = values,
+                Pairs = pairs,
+                IsCustom = true
+            };
+
+            _dataService.AddData(data);
+
+            foreach (var btn in Buttons)
+            {
+                btn.IsSelected = false;
+            }
+
+            MessageBox.Show($"Dodano nowe losowanie z liczbami: {string.Join(", ", data.Values)}");
+
+            UpdateMostCommmonPairs();
         }
     }
 }

@@ -52,7 +52,7 @@ namespace MultiMulti.Core.ViewModels
 
         public void OnButtonClick()
         {
-            // Let it deselect.
+           // Let it deselect.
             if (IsSelected || _vm.CanSelectButton())
             {
                 IsSelected = !IsSelected;

@@ -1,10 +1,12 @@
-﻿using System;
+﻿using LiteDB;
+using NLog;
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using Newtonsoft.Json;
-using NLog;
+using MultiMulti.Core.Utils;
 
 namespace MultiMulti.Core.Services
 {
@@ -12,74 +14,237 @@ namespace MultiMulti.Core.Services
     {
         private readonly ILogger _logger = LogManager.GetCurrentClassLogger();
 
-        private string _savePath;
-        public string SavePath
+        private string _resourcesPath;
+        public string ResourcesPath
         {
             get
             {
-                if(string.IsNullOrEmpty(_savePath))
-                    _savePath = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
-                return _savePath;
+                if(string.IsNullOrEmpty(_resourcesPath))
+                    _resourcesPath = Path.GetDirectoryName(Assembly.GetEntryAssembly().Location);
+                return _resourcesPath;
+            }
+        }
+
+        private readonly PermutationProvider _permutationProvider;
+
+        public DataService(PermutationProvider permutationProvider)
+        {
+            _permutationProvider = permutationProvider;
+        }
+
+        public void ImportAll()
+        {
+            try
+            {
+                using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))
+                {
+                    if (db.CollectionExists("data"))
+                    {
+                        return;
+                    }
+
+                    var allRecords = File.ReadAllLines(Path.Combine(ResourcesPath, "ml.txt"));
+                    var allData = new List<Data>();
+
+                    foreach (var record in allRecords)
+                    {
+                        var columns = record.Split(' ');
+                        var id = columns[0].Substring(0, columns[0].Length - 1);
+                        var date = DateTime.ParseExact(columns[1], "dd.MM.yyyy", CultureInfo.InvariantCulture);
+                        var prev = allData.LastOrDefault();
+
+                        if (prev != null && prev.Added.Day == date.Day)
+                            date += TimeSpan.FromHours(21); // Second draw of the day.
+                        else
+                            date += TimeSpan.FromHours(14);
+
+                        var values = columns[2].Split(',').Select(int.Parse).ToArray();
+                        var pairs = _permutationProvider.GetPermutations(values, 2)
+                            .Select(p => p.ToArray()[0] + ", " + p.ToArray()[1]).ToArray();
+
+                        var data = new Data
+                        {
+                            Id = int.Parse(id),
+                            Added = date,
+                            Values = values,
+                            Pairs = pairs,
+                            IsCustom = false
+                        };
+
+                        allData.Add(data);
+                    }
+
+                    var dataCollection = db.GetCollection<Data>("data");
+                    dataCollection.InsertBulk(allData);
+
+                    dataCollection.EnsureIndex(col => col.Added);
+                }
+
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex);
+            }
+        }
+
+        public IEnumerable<Pair> GetMostCommonPairs()
+        {
+            try
+            {
+                using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))
+                {
+                    if (!db.CollectionExists("data"))
+                    {
+                        throw new InvalidOperationException("Database does not exist!");
+                    }
+
+                    var dataCollection = db.GetCollection<Data>("data");
+                    if (dataCollection.Count() == 0)
+                        ImportAll();
+
+                    var allPairs = dataCollection.FindAll().SelectMany(p => p.Pairs).ToArray();
+                    var allPairsCount = allPairs.Length;
+
+                    var mostCommonPairs =
+                    (from pair in allPairs
+                        group pair by pair
+                        into c
+                        let count = c.Count()
+                        orderby count descending
+                        select new Pair
+                        {
+                            Value = c.Key,
+                            Occurences = count,
+                            OccurencePercentage = ((double)count / allPairsCount) * 100
+                        }).Take(100).ToArray();
+
+                    return mostCommonPairs;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex);
+                return Enumerable.Empty<Pair>();
+            }
+        }
+
+        public IEnumerable<Data> GetAllData()
+        {
+            using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))
+            {
+                if (!db.CollectionExists("data"))
+                {
+                    throw new InvalidOperationException("Database does not exist!");
+                }
+
+                var dataCollection = db.GetCollection<Data>("data");
+                if (dataCollection.Count() == 0)
+                    ImportAll();
+
+                return dataCollection.FindAll().ToArray();
+            }
+        }
+
+        public IEnumerable<string> GetAllPossiblePairs()
+        {
+            try
+            {
+                return File.ReadAllLines(Path.Combine(ResourcesPath, "AllPairs.txt"));
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex);
+                return Enumerable.Empty<string>();
+            }
+        }
+
+        public IEnumerable<Pair> GetAllPossiblePairsWithOccurences()
+        {
+            try
+            {
+                using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))
+                {
+                    if (!db.CollectionExists("data"))
+                    {
+                        throw new InvalidOperationException("Database does not exist!");
+                    }
+
+                    var dataCollection = db.GetCollection<Data>("data");
+                    if (dataCollection.Count() == 0)
+                        ImportAll();
+
+                    var allPairs = dataCollection.FindAll().SelectMany(p => p.Pairs).ToArray();
+                    var allPairsCount = allPairs.Length;
+
+                    var pairs =
+                        allPairs.GroupBy(pair => pair)
+                            .Select(c => new { c, count = c.Count() })
+                            .OrderBy(t => t.c.Key, new PairComparer())
+                            .Select(t => new Pair
+                            {
+                                Value = t.c.Key,
+                                Occurences = t.count,
+                                OccurencePercentage = ((double)t.count / allPairsCount) * 100
+                            }).ToArray();
+
+                    return pairs;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex);
+                return Enumerable.Empty<Pair>();
             }
         }
 
         public void AddData(Data data)
         {
-            var jsonData = JsonConvert.SerializeObject(data, Formatting.None);
-            var filePath = Path.Combine(SavePath, $"data_{data.Id}.txt");
-            File.WriteAllText(filePath, jsonData);
-        }
-
-        public IEnumerable<Data> GetDataFromAllFiles()
-        {
-            var files = Directory.GetFiles(SavePath).Where(file => file.Contains("data_"))
-                            .Select(f => JsonConvert.DeserializeObject<Data>(string.Join("", File.ReadAllLines(f))));
-            foreach (var file in files.OrderBy(f => f.Added))
+            using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))
             {
-                yield return file;
-            }
-        }
-
-        private IEnumerable<IEnumerable<int>> _allPairsCached;
-
-        public IEnumerable<IEnumerable<int>> GetAllPairs()
-        {
-            if (_allPairsCached != null)
-                return _allPairsCached;
-
-            try
-            {
-                var allPairs = new List<IEnumerable<int>>();
-                foreach (var line in File.ReadLines(Path.Combine(SavePath, "AllPairs.txt")))
+                if (!db.CollectionExists("data"))
                 {
-                    var pairs = line.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(int.Parse).ToArray();
-                    allPairs.Add(new[] { pairs[0], pairs[1] });
+                    throw new InvalidOperationException("Database does not exist!");
                 }
-                _allPairsCached = allPairs;
-                return allPairs;
-            }
-            catch (Exception x)
-            {
-                _logger.Error(x);
-                throw;
+
+                var dataCollection = db.GetCollection<Data>("data");
+
+                dataCollection.Insert(data);
             }
         }
 
-        public void DeleteDrawFileWithId(Guid id)
+        public Data GetLatestDraw()
         {
-            try
+            using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))
             {
-                var fileName = $"data_{id}.txt";
-                File.Delete(Path.Combine(SavePath, fileName));
+                var dataCollection = db.GetCollection<Data>("data");
+
+                var latest = dataCollection.Find(
+                    Query.And(
+                        Query.All("Added", Query.Descending), 
+                        Query.Where("IsCustom", value => value.AsBoolean == false))
+                    , 0, 1).FirstOrDefault();
+                return latest;
             }
-            catch (DirectoryNotFoundException dnfe)
+        }
+
+        private class PairComparer : IComparer<string>
+        {
+            public int Compare(string x, string y)
             {
-                _logger.Error(dnfe, "Directory not found");
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex);
-                throw;
+                var firstPair = x.Split(',').Select(int.Parse).ToArray();
+                var secondPair = y.Split(',').Select(int.Parse).ToArray();
+
+                if (firstPair[0] > secondPair[0])
+                    return 1;
+                if (firstPair[0] < secondPair[0])
+                    return -1;
+
+                if (firstPair[1] > secondPair[1])
+                    return 1;
+                if (firstPair[1] < secondPair[1])
+                    return -1;
+
+                return 0;
             }
         }
     }
