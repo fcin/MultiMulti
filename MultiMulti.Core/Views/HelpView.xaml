@@ -1,0 +1,20 @@
+﻿<Window x:Class="MultiMulti.Core.Views.HelpView"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:MultiMulti.Core.Views"
+        mc:Ignorable="d"
+        Title="HelpView" Height="450" Width="800" ResizeMode="NoResize">
+    <Grid>
+        <StackPanel HorizontalAlignment="Center">
+            <TextBlock Margin="10" Text="MultiMulti" FontSize="32"></TextBlock>
+            <TextBlock Margin="10" TextWrapping="WrapWithOverflow" Text="MultiMulti wyszukuje najczęściej występujące pary liczb na podstawie historii przeprowadzonych losowań."></TextBlock>
+            <TextBlock Margin="10" TextWrapping="WrapWithOverflow" Text="Jak używać tego programu:"></TextBlock>
+            <TextBlock Margin="10" TextWrapping="WrapWithOverflow" Text=" Wybierz 20 dowolnych liczb i kliknij przycisk 'Dodaj losowanie'. Nowy rekord zostanie dodany do bazy oraz wyświetlony w w 'Historii losowań' znajdującej się na samym dole głównego okna. Element 'Najczęściej występujące pary' powinien zostać zaktualizowany."></TextBlock>
+            <TextBlock Margin="10" TextWrapping="WrapWithOverflow" Text="'Eksportuj do Excel' pozwala na eksportowanie poprzednich losowań do pliku excel"></TextBlock>
+            <TextBlock Margin="10" TextWrapping="WrapWithOverflow" Text="W przypadku pomyłki w trakcie dodawania nowego losowania można usunąć losowanie klikając 'Usuń' w historii losowań znajdującej się na samym dole głównego okna"></TextBlock>
+            <TextBlock Margin="10, 30" TextWrapping="WrapWithOverflow" Text="W razie błędów proszę o kontakt na email filip@cinik.eu"></TextBlock>
+        </StackPanel>
+    </Grid>
+</Window>
