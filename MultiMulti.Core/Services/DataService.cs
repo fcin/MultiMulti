@@ -44,6 +44,7 @@ namespace MultiMulti.Core.Services
                     }
 
                     var allRecords = File.ReadAllLines(Path.Combine(ResourcesPath, "ml.txt"));
+                    
                     var allData = new List<Data>();
 
                     foreach (var record in allRecords)
@@ -58,7 +59,7 @@ namespace MultiMulti.Core.Services
                         else
                             date += TimeSpan.FromHours(14);
 
-                        var values = columns[2].Split(',').Select(int.Parse).ToArray();
+                        var values = columns[2].Split(',').Select(int.Parse).OrderByDescending(b => b).ToArray();
                         var pairs = _permutationProvider.GetPermutations(values, 2)
                             .Select(p => p.ToArray()[0] + ", " + p.ToArray()[1]).ToArray();
 
@@ -73,7 +74,7 @@ namespace MultiMulti.Core.Services
 
                         allData.Add(data);
                     }
-
+                    var a = allData.Where(d => d.Pairs.Contains("2, 6")).ToList();
                     var dataCollection = db.GetCollection<Data>("data");
                     dataCollection.InsertBulk(allData);
 
@@ -175,6 +176,8 @@ namespace MultiMulti.Core.Services
 
                     var allPairs = dataCollection.FindAll().SelectMany(p => p.Pairs).ToArray();
                     var allPairsCount = allPairs.Length;
+
+                    var debug = allPairs.Count(p => p == "6, 2");
 
                     var pairs =
                         allPairs.GroupBy(pair => pair)
