@@ -71,7 +71,7 @@ namespace MultiMulti.Core.Utils
             {
                 worksheet.Cells[1, columnIndex].Value = $"{draw.Added.ToString(new CultureInfo("pl-PL"))}";
 
-                for (int index = 0; index < draw.Values.Length; index++)
+                for (int index = 0; index < draw.Pairs.Length; index++)
                 {
                     var rowIndex = index + 2;
                     worksheet.Cells[rowIndex, columnIndex].Value = string.Join(", ", draw.Pairs[index]);

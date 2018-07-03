@@ -212,6 +212,21 @@ namespace MultiMulti.Core.Services
             }
         }
 
+        public void AddData(IEnumerable<Data> data)
+        {
+            using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))
+            {
+                if (!db.CollectionExists("data"))
+                {
+                    throw new InvalidOperationException("Database does not exist!");
+                }
+
+                var dataCollection = db.GetCollection<Data>("data");
+
+                dataCollection.InsertBulk(data);
+            }
+        }
+
         public Data GetLatestDraw()
         {
             using (var db = new LiteDatabase(Path.Combine(ResourcesPath, "dataDb.db")))

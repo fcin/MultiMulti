@@ -76,11 +76,13 @@ namespace MultiMulti.Core.ViewModels
                 try
                 {
                     var latest = _dataService.GetLatestDraw();
-                    await _drawScraper.ScrapeNewestAsync(latest.Added);
+                    var newDatas = await _drawScraper.ScrapeNewestAsync(latest.Added);
+
+                    _dataService.AddData(newDatas);
                 }
                 catch (DrawParsingException)
                 {
-
+                    
                 }
                 catch (Exception ex)
                 {
